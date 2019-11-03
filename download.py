@@ -9,21 +9,31 @@ from requests import TooManyRedirects, ReadTimeout
 from tqdm import tqdm
 
 
-def download_urls(df, data_dir):
-    
+def hash_path(digest, dir_len=2, subdirs=4):
+    """
+    Break a hash digest into a path.
+    """
+    dirs = [digest[i:i + dir_len] for i in range(0, len(digest), dir_len)]
+    for i in range(subdirs):
+        dirs.append(digest[i*4:(i+1)*4])
+    # print(dirs)
+    return (os.path.join(*dirs[:subdirs]), "".join(dirs[subdirs:]))
 
+
+def download_urls(df, data_dir):
+    count = df.shape[0]
 
     tq = tqdm(df.iterrows(), total=count, smoothing=0.05)
     for index, row in tq:
+        url = row["url"]
         try:
-            tq.set_postfix(url=row["url"], refresh=False)
+            tq.set_postfix(url=url, refresh=False)
             # print("Downloading %s" % (item.url,))
-            download_item(row, data_dir)
+            download_item(url, data_dir)
         except (KeyboardInterrupt, SystemExit):
             raise
         except KeyError as e:
             traceback.print_exc()
-            item.success = 0
             print("Things went wrong with %s" % (row,))
 
         except (requests.exceptions.ConnectionError, TooManyRedirects, ReadTimeout) as e:
@@ -31,15 +41,15 @@ def download_urls(df, data_dir):
             print("Failed", type(e), e)
             # item.success = 0
         except (ValueError,) as e:
+            # raise e
             pass
-            # print("Failed", type(e), e)
+            print("Failed", type(e), e)
             # item.success = 0
 
 
-def download_item(item, dir):
+def download_item(url, download_dir):
     # download file
     skip_types = [".mp4", ".gif"]
-    url = item["url"]
 
     # test against skipping URLs.
     parsed_url = urlparse(url)
@@ -50,7 +60,7 @@ def download_item(item, dir):
     extension = os.path.splitext(filename)[1]
     if extension in skip_types:
         raise ValueError(extension)
-    file_path = os.path.join(dir, filename)
+    file_path = os.path.join(download_dir, filename)
 
     r = requests.get(url, stream=True, timeout=5.0)
     # print("Headers: %s" % (r.headers,))
@@ -58,7 +68,7 @@ def download_item(item, dir):
     mime_info = MIME_TYPES.get(mime_type)
     if not mime_info or mime_info.skip:
         r.close()
-        raise ValueError("Skipping Mime type: %s url %s" % (mime_type, item.url,))
+        raise ValueError("Skipping Mime type: %s url %s" % (mime_type, url,))
 
     hasher = get_hasher()
 
@@ -72,28 +82,17 @@ def download_item(item, dir):
 
     digest = hasher.hexdigest()
 
-    # check database to see if the hash exists
-    exists = session.query(Item).filter_by(hash=digest).first()
-    if not exists:
-        # new image, save and move it
-        # compute path
-        path, new_name = hash_path(digest, 2)
-        new_filename = new_name + mime_info.extension
+    # new image, save and move it
+    # compute path
+    path, new_name = hash_path(digest, 2)
+    new_filename = new_name + mime_info.extension
 
-        # move file
-        new_path = os.path.join(".", path, new_filename)
-        new_dir = os.path.join(dir, path)
-        new_location = os.path.join(dir, new_path)
+    # move file to new path
+    new_dir = os.path.join(download_dir, path)
+    new_location = os.path.join(new_dir, new_filename)
 
-        os.makedirs(new_dir, exist_ok=True)
-        os.rename(file_path, new_location)
-
-        item.hash = digest
-        item.path = new_path
-    else:
-        os.remove(file_path)
-        # image already exists, set it as an alias
-        item.alias = exists.id
+    os.makedirs(new_dir, exist_ok=True)
+    os.rename(file_path, new_location)
 
 
 MimeData = namedtuple("MimeData", ["skip", "extension"])
